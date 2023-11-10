@@ -1,0 +1,1989 @@
+---
+title: "Auswertung_MA"
+author: "Helena"
+date: "2023-07-26"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+Grundsätzlicher Aufbau des folgenden Auswertungsskriptes:
+
+im ersten Part werden pro Pipeline die entsprechenden Daten (Output Matlab) für die t-Tests Analyse eingelesen,
+t-Tests gerechnet, SME und Trialanzahl angeguckt und im neuen Format abgespeichert.
+Im zweiten Teil ("Über alle Pipelines") werden diese neuen Datensätze zusammengefügt und ANOVAs über alle Pipelines hinweg gerechnet und Grafiken erstellt. Über Outline (rechts) kann wie im Inhaltsverzeichnis zwischen den Auswertungsschritten hin und her gewechselt werden.
+Normalerweise ist jeder Chunk für sich und lädt die benötigten Daten ein, außer im Part "Grand average und t-Test" wo die Daten auf dem vorherigen Chunk aufbauen.
+
+# Load Packages
+```{r}
+library(ggplot2)
+library(tidyverse)
+knitr::opts_chunk$set(cache.extra = 1)
+```
+
+#---------------------------------------------
+
+# MADE
+
+## Import ERP
+Einlesen der ERP-Daten, die mit dem Matlabskript export.m erstellt wurden.
+ERP-Daten der 6 Elektroden C3, C4, Cz, F3, F4, Fz aufgeteilt in die zwei 
+Bedingungen happy und fearful (gemittelt über die jeweiligen Events),
+immer von -200 bis 798.
+```{r made inport}
+rm(list = ls())
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_made/exportx"
+wd2 = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/"
+setwd(wd)
+
+names <- list.files(wd)
+names2 <- gsub(".csv", "", names)
+
+for (i in 1:length(names)) {
+  idx <- read.csv(file.path(wd, names[i]), header = FALSE, row.names = as.character(seq(-200, 798, by = 2)))
+  idx <- data.frame(idx)  
+  assign(names2[i], idx)
+}
+
+rm(idx)
+```
+
+## Grand average und t-Test
+Entspricht der time-window mean amplitude über ROI
+```{r}
+library(lsr)#für Cohen's d
+library(psych)
+happy <- list(made_C3_happy, made_Cz_happy, made_C4_happy,
+              made_F3_happy,made_Fz_happy, made_F4_happy)
+happy_roi <- Reduce('+', happy)/length(happy)
+fearful <- list(made_C3_fearful, made_Cz_fearful, made_C4_fearful,
+              made_F3_fearful,made_Fz_fearful, made_F4_fearful)
+fearful_roi <- Reduce('+', fearful)/length(fearful)
+
+write.csv(happy_roi, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/happy_roi_mx.csv"))
+write.csv(fearful_roi, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/fearful_roi_mx.csv"))
+
+#Pro VP Mittelwert im Zeitintervall 400-800
+happy_m <- colMeans(happy_roi[301:500, ])
+fearful_m <- colMeans(fearful_roi[301:500, ])
+
+t.test(happy_m, fearful_m, alternative = "two.sided", paired = TRUE)
+cohensD(happy_m, fearful_m, method = "paired")
+describe(happy_m)
+
+#Explorative Auswertung 300-600
+happy_m_ex <- colMeans(happy_roi[251:400, ])
+fearful_m_ex <- colMeans(fearful_roi[251:400, ])
+describe(happy_m_ex)
+
+t.test(happy_m_ex, fearful_m_ex, alternative = "two.sided", paired = TRUE)
+cohensD(happy_m_ex, fearful_m_ex, method = "paired")
+#nicht signifikant
+```
+
+
+## Trialanzahl
+```{r trialanzahl}
+rm(list = ls())
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_made/export2"
+setwd(wd)
+
+trials <- read.csv(file.path(wd, "/made_trialanzahl.csv"), header = FALSE)
+
+made_trial_M <- rowMeans(trials)
+made_trial_sd <- apply(trials, 1, sd)
+
+trials_all <- read.csv(file.path(wd, "/made_trialanzahl_alle.csv"), header = FALSE)
+
+made_trial_M2 <- rowMeans(trials_all)
+made_trial_sd2 <- apply(trials_all, 1, sd)
+```
+
+## SME
+
+### Time window mean amplitude
+- fn_c: Die Namen der files, die anzeigen welche Bedingung der jeweilige Trial war
+- fn_t: Matrix mit Abtastrate x Trial
+
+- pro VP Schleife laufen lassen: 
+- gsub('\\D+',''..) bedeutet, alle nicht numerischen Zeichen werden gelöscht ->
+Überprüfung, ob die Nummern übereinstimmen
+- Daten einlesen (dat ist der Datensatz (fn_t) und cond die Bedingung (fn_c))
+- Datensatz aufteilen in happy und fearful
+- mit score erst den Mittelwert pro VP für happy und fearful berechnen
+- für SEM: die Standardabweichung von allen Trialmittelwerten pro Bedingung
+geteilt durch die Wurzel der Trialanzahl
+-> Alle Werte in Tabelle (dat_all) speichern
+
+```{r SME made}
+rm(list = ls())
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_made/export3"
+setwd(wd)
+
+fn_c <- list.files(wd, pattern = "\\_cond")
+fn_t <- list.files(wd, pattern = "\\_roi")
+
+dat_all_made <- setNames(data.frame(matrix(ncol = 4, nrow = length(fn_c))), 
+         c("score_h_m", "score_ff_m", "sem_h_m", "sem_ff_m"))
+rownames <- c()
+
+for (i in 1:length(fn_c)) {
+  if (gsub('\\D+','',fn_c[i]) == gsub('\\D+','',fn_t[i])) {
+    rownames[i] <- gsub('\\D+','',fn_c[i])
+    dat <- read.csv(fn_t[i], header = FALSE)
+    cond <- read.csv(fn_c[i], header = FALSE)
+    
+    dat_h <- dat[, cond == "happy"]
+    dat_ff <- dat[, cond == "fearful"]
+
+    score_h <- mean(colMeans(dat_h[301:500, ]))
+    sem_h <- sd(colMeans(dat_h[301:500, ]))/sqrt(length(dat_h))
+    score_ff <- mean(colMeans(dat_ff[301:500, ]))
+    sem_ff <- sd(colMeans(dat_ff[301:500, ]))/sqrt(length(dat_ff))
+
+    dat_all_made[i,"score_h_m"] <- score_h
+    dat_all_made[i,"score_ff_m"] <- score_ff
+    dat_all_made[i,"sem_h_m"] <- sem_h
+    dat_all_made[i,"sem_ff_m"] <- sem_ff
+  }
+}
+
+row.names(dat_all_made) <- rownames
+
+#write.csv(dat_all_made, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/dat_all_made.csv"))
+```
+
+### Bootstrapped SME
+
+Ablauf:
+Von einer VP alle Trials einer Kategorie (z.B. happy) nehmen. Aus den Trials pro VP so oft einen Wert mit zurücklegen ziehen wie es Trials gibt (z.B. 43) -> Mittlere ERP (400-800ms) berechnen (aus den 43 Trials). Das ganze 10.000x wiederholen mit neuem zufälligem Set. Anschließend SD von den 10.000 ERPs berechnen -> SME
+
+
+```{r}
+rm(list = ls())
+library(boot)
+library(tidyverse)
+set.seed(123)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_made/export3"
+setwd(wd)
+
+fn_c <- list.files(wd, pattern = "\\_cond")
+fn_t <- list.files(wd, pattern = "\\_roi")
+
+dat_all_made <- setNames(data.frame(matrix(ncol = 4, nrow = length(fn_c))), 
+         c("score_h_m", "score_ff_m", "sem_h_m", "sem_ff_m"))
+row_names <- c()
+bs <- 10000 #Anzahl Durchgäng Bootstrap
+boot_h <- data.frame(matrix(ncol = length(fn_c), nrow = bs))
+boot_ff <- data.frame(matrix(ncol = length(fn_c), nrow = bs))
+rownames(boot_h) <- paste("Bootstrap", 1:bs)
+
+for (i in 1:length(fn_c)) {
+  if (gsub('\\D+','',fn_c[i]) == gsub('\\D+','',fn_t[i])) {
+    row_names[i] <- gsub('\\D+','',fn_c[i])
+    dat <- read.csv(fn_t[i], header = FALSE)
+    cond <- read.csv(fn_c[i], header = FALSE)
+    
+    dat_h <- dat[, cond == "happy"]
+    dat_ff <- dat[, cond == "fearful"]
+    
+    #mit der Funktion werden erst über zufall_col eine zufällig Auswahl an Spalten (Trials) aus dem Datensatz dat_h (nur happy trials einer VP) ausgewählt. Anschließend werden die Zeilen 301-500 (400-800ms) ausgewählt, pro Spalte ein Mittelwert gebildet und aus allen Spaltenmittelwerten ein Gesamtmittelwert gebildet (pro Bootstrap und VP)
+    sem_boot_fct_h <- function(data, indices) {
+      zufall_col <- sample(1:ncol(data), length(dat_h), replace = TRUE)
+      twma <- data[301:500, zufall_col]
+      col_means <- colMeans(twma)
+      mean(col_means)
+    }
+    
+    sem_boot_fct_ff <- function(data, indices) {
+      zufall_col <- sample(1:ncol(data), length(dat_ff), replace = TRUE)
+      twma <- data[301:500, zufall_col]
+      col_means <- colMeans(twma)
+      mean(col_means)
+    }
+    
+    boot_results <- boot(data = dat_h, statistic = sem_boot_fct_h, R = bs)
+    boot_h[, i] <- boot_results$t
+    colnames(boot_h)[i] <- row_names[i]
+    
+    boot_results <- boot(data = dat_ff, statistic = sem_boot_fct_ff, R = bs)
+    boot_ff[, i] <- boot_results$t
+    colnames(boot_ff)[i] <- row_names[i]
+  }
+}
+
+sem_boot <- setNames(data.frame(matrix(ncol = 2, nrow = length(fn_c))), 
+         c("sem_h_m_boot", "sem_ff_m_boot"))
+sem_boot[,1] <- apply(boot_h, 2, sd)
+sem_boot[,2] <- apply(boot_ff, 2, sd)
+row.names(sem_boot) <- row_names
+
+#write.csv(sem_boot, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/sem_boot_made.csv"))
+```
+
+
+# HAPPE
+
+## Import ERP
+Einlesen der ERP-Daten, die mit dem Matlabskript export.m erstellt wurden.
+ERP-Daten der 6 Elektroden C3, C4, Cz, F3, F4, Fz aufgeteilt in die zwei 
+Bedingungen happy und fearful (gemittelt über die jeweiligen Events),
+immer von -200 bis 798.
+```{r setup, include=FALSE}
+rm(list = ls())
+library(lsr)
+library(psych)
+library(ggplot2)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_happe/exportx"
+wd2 = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/"
+setwd(wd)
+
+names <- list.files(wd)
+names2 <- gsub(".csv", "", names)
+
+for (i in 1:length(names)) {
+  idx <- read.csv(file.path(wd, names[i]), header = FALSE, row.names = as.character(seq(-200, 798, by = 2)))
+  idx <- data.frame(idx)  
+  assign(names2[i], idx)
+}
+
+rm(idx)
+```
+
+## Grand average und t-Test
+
+```{r}
+happy <- list(happe_C3_happy, happe_Cz_happy, happe_C4_happy,
+              happe_F3_happy,happe_Fz_happy, happe_F4_happy)
+happy_roi <- Reduce('+', happy)/length(happy)
+fearful <- list(happe_C3_fearful, happe_Cz_fearful, happe_C4_fearful,
+              happe_F3_fearful,happe_Fz_fearful, happe_F4_fearful)
+fearful_roi <- Reduce('+', fearful)/length(fearful)
+
+write.csv(happy_roi, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/happy_roi_hx.csv"))
+write.csv(fearful_roi, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/fearful_roi_hx.csv"))
+
+#Pro VP Mittelwert im Zeitintervall 400-800
+happy_m <- colMeans(happy_roi[301:500, ])
+fearful_m <- colMeans(fearful_roi[301:500, ])
+describe(happy_m)
+describe(fearful_m)
+
+t.test(happy_m, fearful_m, alternative = "two.sided", paired = TRUE)
+cohensD(happy_m, fearful_m, method = "paired")
+
+library(BayesFactor)
+bf_result <- ttestBF(happy_m, fearful_m, paired = TRUE)
+summary(bf_result)
+1/bf_result
+
+#Explorative Auswertung 300-600
+happy_m_ex <- colMeans(happy_roi[251:400, ])
+fearful_m_ex <- colMeans(fearful_roi[251:400, ])
+describe(fearful_m_ex)
+
+t.test(happy_m_ex, fearful_m_ex, alternative = "two.sided", paired = TRUE)
+cohensD(happy_m_ex, fearful_m_ex, method = "paired")
+```
+
+## Trialanzahl
+```{r trialanzahl}
+rm(list = ls())
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_happe/export2"
+setwd(wd)
+
+trials <- read.csv(file.path(wd, "/happe_trialanzahl.csv"), header = FALSE)
+
+happe_trial_M <- rowMeans(trials)
+happe_trial_sd <- apply(trials, 1, sd)
+
+trials_all <- read.csv(file.path(wd, "/happe_trialanzahl_alle.csv"), header = FALSE)
+
+happe_trial_M2 <- rowMeans(trials_all)
+happe_trial_sd2 <- apply(trials_all, 1, sd)
+```
+
+## SME
+
+### SEM
+
+```{r SME happe}
+rm(list = ls())
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_happe/export3"
+setwd(wd)
+
+fn_c <- list.files(wd, pattern = "\\_cond")
+fn_t <- list.files(wd, pattern = "\\_roi")
+
+dat_all_happe <- setNames(data.frame(matrix(ncol = 4, nrow = length(fn_c))), 
+         c("score_h_h", "score_ff_h", "sem_h_h", "sem_ff_h"))
+rownames <- c()
+
+for (i in 1:length(fn_c)) {
+  if (gsub('\\D+','',fn_c[i]) == gsub('\\D+','',fn_t[i])) {
+    rownames[i] <- gsub('\\D+','',fn_c[i])
+    dat <- read.csv(fn_t[i], header = FALSE)
+    cond <- read.csv(fn_c[i], header = FALSE)
+    
+    dat_h <- dat[, cond == "happy"]
+    dat_ff <- dat[, cond == "fearful"]
+
+    score_h <- mean(colMeans(dat_h[301:500, ]))
+    sem_h <- sd(colMeans(dat_h[301:500, ]))/sqrt(length(dat_h))
+    score_ff <- mean(colMeans(dat_ff[301:500, ]))
+    sem_ff <- sd(colMeans(dat_ff[301:500, ]))/sqrt(length(dat_ff))
+
+    dat_all_happe[i,"score_h_h"] <- score_h
+    dat_all_happe[i,"score_ff_h"] <- score_ff
+    dat_all_happe[i,"sem_h_h"] <- sem_h
+    dat_all_happe[i,"sem_ff_h"] <- sem_ff
+  }
+}
+
+row.names(dat_all_happe) <- rownames
+
+write.csv(dat_all_happe, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/dat_all_happe.csv"))
+```
+
+
+### Bootstrapped SME
+
+Ablauf:
+siehe MADE für Erklärungen
+twma = time window mean amplitude
+```{r}
+rm(list = ls())
+library(boot)
+library(tidyverse)
+set.seed(123)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_happe/export3"
+setwd(wd)
+
+fn_c <- list.files(wd, pattern = "\\_cond")
+fn_t <- list.files(wd, pattern = "\\_roi")
+
+row_names <- c()
+bs <- 10000 #Anzahl an Bootstrapdurchläufen
+boot_h <- data.frame(matrix(ncol = length(fn_c), nrow = bs))
+boot_ff <- data.frame(matrix(ncol = length(fn_c), nrow = bs))
+rownames(boot_h) <- paste("Bootstrap", 1:bs)
+
+for (i in 1:length(fn_c)) {
+  if (gsub('\\D+','',fn_c[i]) == gsub('\\D+','',fn_t[i])) {
+    row_names[i] <- gsub('\\D+','',fn_c[i])
+    dat <- read.csv(fn_t[i], header = FALSE)
+    cond <- read.csv(fn_c[i], header = FALSE)
+    
+    dat_h <- dat[, cond == "happy"]
+    dat_ff <- dat[, cond == "fearful"]
+
+    sem_boot_fct_h <- function(data, indices) {
+      zufall_col <- sample(1:ncol(data), length(dat_h), replace = TRUE)
+      twma <- data[301:500, zufall_col]
+      col_means <- colMeans(twma)
+      mean(col_means)
+    }
+    
+    sem_boot_fct_ff <- function(data, indices) {
+      zufall_col <- sample(1:ncol(data), length(dat_ff), replace = TRUE)
+      twma <- data[301:500, zufall_col]
+      col_means <- colMeans(twma)
+      mean(col_means)
+    }
+    
+    boot_results <- boot(data = dat_h, statistic = sem_boot_fct_h, R = bs)
+    boot_h[, i] <- boot_results$t
+    colnames(boot_h)[i] <- row_names[i]
+    
+    boot_results <- boot(data = dat_ff, statistic = sem_boot_fct_ff, R = bs)
+    boot_ff[, i] <- boot_results$t
+    colnames(boot_ff)[i] <- row_names[i]
+  }
+}
+
+sem_boot <- setNames(data.frame(matrix(ncol = 2, nrow = length(fn_c))), 
+         c("sem_h_h_boot", "sem_ff_h_boot"))
+sem_boot[,1] <- apply(boot_h, 2, sd)
+sem_boot[,2] <- apply(boot_ff, 2, sd)
+row.names(sem_boot) <- row_names
+
+write.csv(sem_boot, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/sem_boot_happe.csv"))
+```
+
+
+
+# APICE
+
+## Import ERP
+Einlesen der ERP-Daten, die mit dem Matlabskript export.m erstellt wurden.
+ERP-Daten der 6 Elektroden C3, C4, Cz, F3, F4, Fz aufgeteilt in die zwei 
+Bedingungen happy und fearful (gemittelt über die jeweiligen Events),
+immer von -200 bis 798.
+```{r setup, include=FALSE}
+rm(list = ls())
+library(lsr)
+library(psych)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_apice/DATA/exportx"
+wd2 = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/"
+setwd(wd)
+
+names <- list.files(wd)
+names2 <- gsub(".csv", "", names)
+
+for (i in 1:length(names)) {
+  idx <- read.csv(file.path(wd, names[i]), header = FALSE, row.names = as.character(seq(-200, 798, by = 2)))
+  idx <- data.frame(idx)  
+  assign(names2[i], idx)
+}
+
+rm(idx)
+```
+
+## Grand average und t-Test
+
+```{r}
+happy <- list(apice_C3_happy, apice_Cz_happy, apice_C4_happy,
+              apice_F3_happy,apice_Fz_happy, apice_F4_happy)
+happy_roi <- Reduce('+', happy)/length(happy)
+fearful <- list(apice_C3_fearful, apice_Cz_fearful, apice_C4_fearful,
+              apice_F3_fearful,apice_Fz_fearful, apice_F4_fearful)
+fearful_roi <- Reduce('+', fearful)/length(fearful)
+
+#wieder mit reinnehmen, beim ersten Mal
+write.csv(happy_roi, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/happy_roi_ax.csv"))
+write.csv(fearful_roi, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/fearful_roi_ax.csv"))
+
+#Pro VP Mittelwert im Zeitintervall 400-800
+happy_m <- colMeans(happy_roi[301:500, ])
+fearful_m <- colMeans(fearful_roi[301:500, ])
+describe(happy_m)
+describe(fearful_m)
+
+t.test(happy_m, fearful_m, alternative = "two.sided", paired = TRUE)
+cohensD(happy_m, fearful_m, method = "paired")
+
+#Explorative Auswertung 300-600
+happy_m_ex <- colMeans(happy_roi[251:400, ])
+fearful_m_ex <- colMeans(fearful_roi[251:400, ])
+describe(happy_m_ex)
+describe(fearful_m_ex)
+
+t.test(happy_m_ex, fearful_m_ex, alternative = "two.sided", paired = TRUE)
+cohensD(happy_m_ex, fearful_m_ex, method = "paired")
+```
+
+## Trialanzahl
+```{r trialanzahl}
+rm(list = ls())
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_apice/DATA/export2"
+setwd(wd)
+
+trials <- read.csv(file.path(wd, "/apice_trialanzahl.csv"), header = FALSE)
+
+apice_trial_M <- rowMeans(trials)
+apice_trial_sd <- apply(trials, 1, sd)
+```
+
+
+## SME
+
+### SEM
+
+```{r SME apice}
+rm(list = ls())
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_apice/DATA/export3"
+setwd(wd)
+
+fn_c <- list.files(wd, pattern = "\\_cond")
+fn_t <- list.files(wd, pattern = "\\_roi")
+
+dat_all_apice <- setNames(data.frame(matrix(ncol = 4, nrow = length(fn_c))), 
+         c("score_h_a", "score_ff_a", "sem_h_a", "sem_ff_a"))
+rownames <- c()
+
+for (i in 1:length(fn_c)) {
+  if (gsub('\\D+','',fn_c[i]) == gsub('\\D+','',fn_t[i])) {
+    rownames[i] <- gsub('\\D+','',fn_c[i])
+    dat <- read.csv(fn_t[i], header = FALSE)
+    cond <- read.csv(fn_c[i], header = FALSE)
+    
+    dat_h <- dat[, cond == "happy"]
+    dat_ff <- dat[, cond == "fearful"]
+
+    score_h <- mean(colMeans(dat_h[301:500, ]))
+    sem_h <- sd(colMeans(dat_h[301:500, ]))/sqrt(length(dat_h))
+    score_ff <- mean(colMeans(dat_ff[301:500, ]))
+    sem_ff <- sd(colMeans(dat_ff[301:500, ]))/sqrt(length(dat_ff))
+
+    dat_all_apice[i,"score_h_a"] <- score_h
+    dat_all_apice[i,"score_ff_a"] <- score_ff
+    dat_all_apice[i,"sem_h_a"] <- sem_h
+    dat_all_apice[i,"sem_ff_a"] <- sem_ff
+  }
+}
+
+row.names(dat_all_apice) <- rownames
+
+write.csv(dat_all_apice, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/dat_all_apice.csv"))
+```
+
+### Bootstrapped SME
+
+Ablauf:
+siehe MADE für Erklärungen
+twma = time window mean amplitude
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(boot)
+set.seed(123)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_apice/DATA/export3"
+setwd(wd)
+
+fn_c <- list.files(wd, pattern = "\\_cond")
+fn_t <- list.files(wd, pattern = "\\_roi")
+
+row_names <- c()
+bs <- 10000 #Anzahl an Bootstrapdurchläufen
+boot_h <- data.frame(matrix(ncol = length(fn_c), nrow = bs))
+boot_ff <- data.frame(matrix(ncol = length(fn_c), nrow = bs))
+rownames(boot_h) <- paste("Bootstrap", 1:bs)
+
+for (i in 1:length(fn_c)) {
+  if (gsub('\\D+','',fn_c[i]) == gsub('\\D+','',fn_t[i])) {
+    row_names[i] <- gsub('\\D+','',fn_c[i])
+    dat <- read.csv(fn_t[i], header = FALSE)
+    cond <- read.csv(fn_c[i], header = FALSE)
+    
+    dat_h <- dat[, cond == "happy"]
+    dat_ff <- dat[, cond == "fearful"]
+
+    sem_boot_fct_h <- function(data, indices) {
+      zufall_col <- sample(1:ncol(data), length(dat_h), replace = TRUE)
+      twma <- data[301:500, zufall_col]
+      col_means <- colMeans(twma)
+      mean(col_means)
+    }
+    
+    sem_boot_fct_ff <- function(data, indices) {
+      zufall_col <- sample(1:ncol(data), length(dat_ff), replace = TRUE)
+      twma <- data[301:500, zufall_col]
+      col_means <- colMeans(twma)
+      mean(col_means)
+    }
+    
+    boot_results <- boot(data = dat_h, statistic = sem_boot_fct_h, R = bs)
+    boot_h[, i] <- boot_results$t
+    colnames(boot_h)[i] <- row_names[i]
+    
+    boot_results <- boot(data = dat_ff, statistic = sem_boot_fct_ff, R = bs)
+    boot_ff[, i] <- boot_results$t
+    colnames(boot_ff)[i] <- row_names[i]
+  }
+}
+
+sem_boot <- setNames(data.frame(matrix(ncol = 2, nrow = length(fn_c))), 
+         c("sem_h_a_boot", "sem_ff_a_boot"))
+sem_boot[,1] <- apply(boot_h, 2, sd)
+sem_boot[,2] <- apply(boot_ff, 2, sd)
+row.names(sem_boot) <- row_names
+
+write.csv(sem_boot, file.path("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study/sem_boot_apice.csv"))
+```
+
+#----------------------------------------------------
+
+# Über alle Pipelines
+
+## Zusammenführen der Kennwerte und RMS
+Abkürzungserklärung:
+h = happy, ff = fearful
+a = apice, m = made, h = happy
+score = time-window mean amplitude (in uV): 400-800ms
+sem = sem
+
+```{r}
+rm(list = ls())
+library(dplyr)
+wd <- "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study"
+setwd(wd)
+
+made <- read.csv("dat_all_made.csv")
+happe <- read.csv("dat_all_happe.csv")
+apice <- read.csv("dat_all_apice.csv")
+
+dat_all <- merge(made, happe, by = "X", all = T)
+dat_all <- merge(dat_all, apice, by = "X", all = T)
+
+#Mittelwert pro Spalte berechnen
+dat_all["sample_mean",] <- colMeans(dat_all, na.rm = TRUE)
+
+#SD berechnen
+sd_n <- grep("score", colnames(dat_all), value = TRUE)
+sd <- sapply(dat_all[sd_n], sd, na.rm = TRUE)
+for (i in 1:length(sd_n)) {
+  dat_all["sd",sd_n[i]] <- sd[i]
+}
+
+#RMS berechnen und pro Spalte hinzufügen
+#sem_n beinhaltet die Spaltennamen, in denen "sem" vorkommt
+sem_n <- grep("sem", colnames(dat_all), value = TRUE)
+rms <- sapply(dat_all[sem_n], function(x) {
+  sqrt(sum(na.omit(x)^2) / length(na.omit(x)))
+  })
+
+for (i in 1:length(sem_n)) {
+  dat_all["rms",sem_n[i]] <- rms[i]
+}
+
+dat_all["sample_mean", "X"] <- NA
+
+write.csv(dat_all, "dat_all.csv")
+```
+
+## Bootstrapped SEM zusammenführen und SNR
+
+
+```{r}
+rm(list = ls())
+library(dplyr)
+library(psych)
+wd <- "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study"
+setwd(wd)
+
+made <- read.csv("sem_boot_made.csv")
+happe <- read.csv("sem_boot_happe.csv")
+apice <- read.csv("sem_boot_apice.csv")
+dat <- read.csv("dat_all.csv")
+
+#Zusammenfügen der einzelnen Datensätze
+dat_all <- merge(dat, made, by = "X", all = T)
+dat_all <- merge(dat_all, happe, by = "X", all = T)
+dat_all <- merge(dat_all, apice, by = "X", all = T)
+
+#Überprüfen wie stark die Abweichung von aSME zu bSME ist
+describe(((dat_all$sem_h_m/dat_all$sem_h_m_boot) - 1)*100)
+describe(((dat_all$sem_ff_m/dat_all$sem_ff_m_boot) - 1)*100)
+describe(((dat_all$sem_h_h/dat_all$sem_h_h_boot) - 1)*100)
+describe(((dat_all$sem_ff_h/dat_all$sem_ff_h_boot) - 1)*100)
+describe(((dat_all$sem_h_a/dat_all$sem_h_a_boot) - 1)*100)
+describe(((dat_all$sem_ff_a/dat_all$sem_ff_a_boot) - 1)*100)
+
+#SNR berechnen (Score/SEM)
+snr_h_m <- dat_all$score_h_m/dat_all$sem_h_m
+snr_ff_m <- dat_all$score_ff_m/dat_all$sem_ff_m
+snr_h_h <- dat_all$score_h_h/dat_all$sem_h_h
+snr_ff_h <- dat_all$score_ff_h/dat_all$sem_ff_h
+snr_h_a <- dat_all$score_h_a/dat_all$sem_h_a
+snr_ff_a <- dat_all$score_ff_a/dat_all$sem_ff_a
+
+#RMS berechnen und pro Spalte hinzufügen
+#sem_n beinhaltet die Spaltennamen, in denen "sem" vorkommt
+sem_n <- grep("boot", colnames(dat_all), value = TRUE)
+dat_all[45,sem_n] <- colMeans(dat_all[sem_n], na.rm = TRUE)
+rms <- sapply(dat_all[sem_n], function(x) {
+  sqrt(sum(na.omit(x)^2) / length(na.omit(x)))
+  })
+
+#AUFPASSEN: Nicht immer Z.43! -> RMS hinzufügen
+for (i in 1:length(sem_n)) {
+  dat_all[43,sem_n[i]] <- rms[i]
+}
+
+#SNR hinzufügen
+dat_all_2 <- data.frame(dat_all, snr_h_m, snr_ff_m, snr_h_h, snr_ff_h, snr_h_a, snr_ff_a)
+
+#Sortieren der Tabelle (erst nach Spalten und dann nach Zeilen)
+order_colnames <- c("X.1", "X", "score_h_m", "score_ff_m", "sem_h_m", "sem_h_m_boot", "sem_ff_m", 
+                    "sem_ff_m_boot", "score_h_h", "score_ff_h", "sem_h_h", "sem_h_h_boot",
+                    "sem_ff_h", "sem_ff_h_boot", "score_h_a", "score_ff_a", "sem_h_a",
+                    "sem_h_a_boot", "sem_ff_a", "sem_ff_a_boot")
+order_rownames <- c(1:42, "sample_mean", "sd", "rms")
+
+#für SNR
+order_colnames_2 <- c("X.1", "X", "score_h_m", "score_ff_m", "sem_h_m", "sem_h_m_boot", "snr_h_m",
+                      "sem_ff_m", "sem_ff_m_boot", "snr_ff_m", "score_h_h", "score_ff_h", 
+                      "sem_h_h", "sem_h_h_boot", "snr_h_h", "sem_ff_h", "sem_ff_h_boot",
+                      "snr_ff_h", "score_h_a", "score_ff_a", "sem_h_a", 
+                      "sem_h_a_boot","snr_h_a", "sem_ff_a", "sem_ff_a_boot", "snr_ff_a")
+order_rownames <- c(1:42, "sample_mean", "sd", "rms")
+
+dat_sort <- dat_all %>% select(all_of(order_colnames))
+dat_sort <- dat_sort %>% arrange(match(X.1, order_rownames))
+
+dat_sort_2 <- dat_all_2 %>% select(all_of(order_colnames_2)) 
+dat_sort_2 <- dat_sort_2 %>% arrange(match(X.1, order_rownames))
+
+#Funktion um nur die numerischen Teile aus der Tabelle zu runden
+runden <- function(x, decimals) {
+  if (is.numeric(x)) {
+    return(round(x, digits = 2))
+  } else {
+    return(x)
+  }
+}
+
+dat_sort_short <- data.frame(lapply(dat_sort, runden))
+dat_sort2_short <- data.frame(lapply(dat_sort_2, runden))
+
+write.csv(dat_sort, "dat_all_2.csv")
+write.csv(dat_sort_short, "dat_all_2_short_2.csv")
+write.csv(dat_sort2_short, "dat_all_2_snr_short.csv")
+write.csv(dat_sort_2, "dat_all_2_snr.csv")
+```
+
+
+## ANOVA incl assumptions
+
+Erstmal wide-format in long-format umändern
+
+Voraussetzungen testen:
+1. Metrisch skalierte AV 
+2. Nominalverteilt UV (Pipeline -> Faktoren)
+3. normalverteilte Fehlerterme innerhalb der Gruppen -> Testen
+4. Varianzhomogenität -> Testen
+
+### ANOVA SEM
+
+```{r anova}
+rm(list = ls())
+library(tidyr)
+library(ggplot2)
+library(car)
+library(tidyverse)
+library(DescTools)
+library(performance)
+library(see)
+library(ggsignif)
+wd <- "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study"
+setwd(wd)
+
+dat <- read.csv("dat_all.csv")
+
+dat_wide <- dat[1:42, c("X","sem_h_m","sem_ff_m","sem_h_h","sem_ff_h","sem_h_a","sem_ff_a")]
+
+colnames(dat_wide) <- c("X","hp.m","ff.m","hp.h","ff.h","hp.a","ff.a")
+dat_long <- dat_wide %>% 
+  gather(v, value, "hp.m":"ff.a") %>% 
+  separate(v, c("condition", "pipeline")) %>% 
+  arrange(X) 
+
+# Übersicht über Mittelwert und Standardabweichung SEM
+overview <- dat_long %>% na.omit() %>% 
+  group_by(condition, pipeline) %>%
+  summarise(mean = mean(value),
+                   sd = sd(value))
+overview
+
+boxplot_sme <- dat_long %>% na.omit() %>% 
+  ggplot(aes(x = pipeline, y = value, fill = condition)) +
+  geom_boxplot() +
+  labs(x = "Pipeline", y = "aSME") +
+  scale_fill_discrete(name = "Condition",
+                      labels = c("fearful", "happy")) +
+  scale_x_discrete(labels = c('APICE\n(n=41)','HAPPE\n(n=36)','MADE\n(n=34)')) +
+  theme_light() +
+  showSignificance(c(2,3), 16.5, -0.4, "*") + 
+  showSignificance(c(1,3), 17.8, -0.4, "***") +
+  ylim(0, 18.2) 
+  #facet_grid(.~condition)
+boxplot_sme
+ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/boxplot_sme_anova.png",
+       boxplot_sme, width = 5, height = 4, units = "in")
+
+# ANOVA SEM
+model_sem <- aov(value ~ condition * pipeline, data = dat_long)
+summary(model_sem)
+#Erg: <.001 für Pipeline, sign. Haupteffekt (noch in obere Grafik einzeichnen? + Kontraste rechnen?)
+EtaSq(model_sem)
+#Effektstärke eta-squared schätzen: mittlerer Effekt für Pipeline (Zitation finden)
+
+## Voraussetzungen Testen
+assump_sem <- check_model(model_sem)
+assump_sem
+
+#1. Varianzhomogenität
+plot(model_sem, 1)
+#84,18 und 243 Ausreißer
+leveneTest(value ~ condition * pipeline, data = dat_long)
+# >.05 -> keine Annahme stat. signifikanter Unterschied zwischen Varianzen anzunehmen
+
+#2. Normalität
+plot(model_sem, 2)
+#gleiche Ausreißer
+aov_residuals <- residuals(object = model_sem)
+shapiro.test(x = aov_residuals )
+#signifikant!! Normalverteilung kann nicht angenommen werden
+
+#Paarvergleiche mit t-Tests und alpha-Adjustierung
+pairwise.t.test(x = dat_long$value, g = dat_long$pipeline,
+                p.adjust.method = "holm", paired = FALSE,
+                alternative = "two.sided" )
+#APICE zu MADe (sehr sign.) und MADE zu HAPPE (sign.)
+```
+
+### ANOVA Trialanzahl
+Abk: m = made, h = happe, a = apice
+
+Trialanzahl für jede Pipeline einlesen und anschließend zu einem Datensatz zusammenfügen
+```{r}
+rm(list = ls())
+library(tidyverse)
+#library(reshape2)
+library(ggplot2)
+#library(ggpubr)
+library(car)
+library(DescTools)
+library(performance)
+library(see)
+library(superb)
+library(psych)
+wd <- "D:/Masterarbeit/Forschungspraktikum/MOMA-audio"
+setwd(wd)
+
+#Daten einlesen
+trial_m <- read.csv(paste0(wd,"/preprocessed_made/export2/made_trialanzahl_2.csv"), header = TRUE)
+trial_h <- read.csv(paste0(wd,"/preprocessed_happe/export2/happe_trialanzahl_2.csv"), header = TRUE)
+trial_a <- read.csv(paste0(wd,"/preprocessed_apice/DATA/export2/apice_trialanzahl_2.csv"), header = TRUE)
+
+m <- trial_m %>% 
+  pivot_longer(cols = everything(), names_to = "sub", values_to = "made")
+h <- trial_h %>% 
+  pivot_longer(cols = everything(), names_to = "sub", values_to = "happe")
+a <- trial_a %>% 
+  pivot_longer(cols = everything(), names_to = "sub", values_to = "apice")
+
+#Neuer Datensatz
+dt <- m %>% 
+  full_join(h, by = "sub") %>% 
+  full_join(a, by = "sub")
+
+#Überflüssige Variablen entfernen
+rm(a,m,h,trial_a,trial_h,trial_m)
+
+#Datensatz ordnen
+dt$sub <- gsub("X", "",dt$sub) %>% as.numeric()
+dt <- dt[order(dt$sub),]
+
+# ins Longformat umwandelt
+dt_long <- dt %>%
+  pivot_longer(cols = c(made, happe, apice), 
+               names_to = "pipeline", 
+               values_to = "wert")
+#dt_long$pipeline <- as.factor(dt_long$pipeline)
+overview <- dt_long %>% na.omit() %>% 
+  group_by(pipeline) %>%
+  summarise(mean = mean(wert),
+                   sd = sd(wert))
+overview
+
+#Boxplot 
+boxplot_trial <- dt_long %>% na.omit() %>% 
+  ggplot(aes(x = pipeline, y = wert)) +
+  geom_boxplot() +
+  labs(x = "pipeline", y = "trialcount")  +
+  scale_x_discrete(labels = c('APICE','HAPPE','MADE')) +
+  theme_light() +
+  showSignificance(c(1,2), 200, -3, "***") +
+  showSignificance(c(1,3), 210, -3, "**") +
+  ylim(10, 215)
+ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/boxplot_trial_anova.png",
+       boxplot_trial, width = 5, height = 4.8, units = "in")
+
+#ANOVA
+model_tno <- aov(wert ~ pipeline, data = dt_long)
+summary(model_tno)
+#Erg: <.001 für Pipeline, sign. Haupteffekt (Kontraste rechnen?)
+EtaSq(model_tno)
+#Large effect with .17
+
+## Voraussetzungen Testen
+
+assumption_check <- check_model(model_tno)
+assumption_check
+
+#1. Varianzhomogenität
+plot(model_tno, 1)
+#84,18 und 243 Ausreißer
+leveneTest(wert ~ pipeline, data = dt_long)
+# <.05 -> stat. signifikanter Unterschied zwischen Varianzen anzunehmen
+# Voraussetzung verletzt?
+
+
+#2. Normalität
+plot(model_tno, 2)
+#gleiche Ausreißer
+aov_residuals <- residuals(object = model_tno)
+shapiro.test(x = aov_residuals)
+# nicht signifikant, Normalverteilung kann angenommen werden
+
+
+#Paarvergleiche mit t-Tests und alpha-Adjustierung
+pairwise.t.test(x = dt_long$wert, g = dt_long$pipeline,
+                p.adjust.method = "holm", paired = FALSE,
+                alternative = "two.sided" )
+#APICE zu MADE (sign.) und APICE zu HAPPE (sehr sign.)
+
+summary(dt)
+```
+
+### ANOVA SNR
+
+```{r}
+rm(list = ls())
+library(tidyr)
+library(ggplot2)
+library(car)
+library(tidyverse)
+library(DescTools)
+library(performance)
+library(see)
+library(superb)
+wd <- "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/study"
+setwd(wd)
+
+dat <- read.csv("dat_all_2_snr.csv")
+
+dat_wide <- dat[1:42, c("X","snr_h_m","snr_ff_m","snr_h_h","snr_ff_h","snr_h_a","snr_ff_a")]
+
+colnames(dat_wide) <- c("X","hp.m","ff.m","hp.h","ff.h","hp.a","ff.a")
+dat_long <- dat_wide %>% 
+  gather(v, value, "hp.m":"ff.a") %>% 
+  separate(v, c("condition", "pipeline")) %>% 
+  arrange(X) 
+
+dat_long2 <- dat_long
+dat_long2$value <- abs(dat_long2$value)
+
+# Übersicht über Mittelwert und Standardabweichung SEM
+overview <- dat_long2 %>% na.omit() %>% 
+  group_by(pipeline) %>%
+  summarise(mean = mean(value),
+                   sd = sd(value))
+overview
+
+boxplot_snr <- dat_long2 %>% na.omit() %>% 
+  ggplot(aes(x = pipeline, y = value)) +
+  geom_boxplot() +
+  labs(x = "pipeline", y = "SNR") +
+  scale_x_discrete(labels = c('APICE\n(n=41)','HAPPE\n(n=36)','MADE\n(n=34)')) +
+  showSignificance(c(1,3), 7.6, -0.25, "*") +
+  ylim(0,7.8) + 
+  theme_light()
+ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/boxplot_snr_anova.png",
+       boxplot_snr, width = 5, height = 4.8, units = "in")
+
+
+# ANOVA SNR
+model_snr <- aov(value ~ pipeline, data = dat_long2)
+summary(model_snr)
+#Erg: <.001 für Pipeline, sign. Haupteffekt (noch in obere Grafik einzeichnen? + Kontraste rechnen?)
+EtaSq(model_snr)
+#Effektstärke eta-squared schätzen: kleiner bis mittlerer Effekt für Pipeline (Zitation finden)
+
+## Voraussetzungen Testen
+assump_snr <- check_model(model_snr)
+assump_snr
+#Voraussetzungen gegeben
+
+#1. Varianzhomogenität
+plot(model_snr, 1)
+#84,18 und 243 Ausreißer
+leveneTest(value ~ pipeline, data = dat_long)
+# >.05 -> keine Annahme stat. signifikanter Unterschied zwischen Varianzen anzunehmen
+
+#2. Normalität
+plot(model_snr, 2)
+#gleiche Ausreißer
+aov_residuals <- residuals(object = model_snr)
+shapiro.test(x = aov_residuals )
+#nicht signifikant!! Normalverteilung kann angenommen werden
+
+#Paarvergleiche mit t-Tests und alpha-Adjustierung
+pairwise.t.test(x = dat_long2$value, g = dat_long2$pipeline,
+                p.adjust.method = "holm", paired = FALSE,
+                alternative = "two.sided" )
+#signifikant APICE zu MADE
+```
+
+#---------------------------------------------------------
+
+# Plots
+
+## ERP Plots
+
+### MADE
+
+```{r}
+rm(list = ls())
+library(tidyverse)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/"
+setwd(wd)
+
+#Daten laden
+fearful_roi <- read.csv(paste0(wd, "study/fearful_roi_m.csv")) %>% select(-X)
+happy_roi <- read.csv(paste0(wd, "study/happy_roi_m.csv")) %>% select(-X)
+
+#Funktion: Standardfehler
+se <- function(x) sd(x) / sqrt(length(x)) 
+
+#Zeilen für neuen Datensatz vorbereiten (Mittelwert, SE) und in einem Datensatz (erp_dt) zusammenfügen
+sampling_rate <- seq(-200, 798, by = 2)
+happy <- rowMeans(happy_roi)
+fearful <- rowMeans(fearful_roi)
+happy_se <- apply(happy_roi, 1, se)
+fearful_se <- apply(fearful_roi, 1, se)
+sd_min_h <- happy - happy_se
+sd_max_h <- happy + happy_se
+sd_min_ff <- fearful - fearful_se
+sd_max_ff <- fearful + fearful_se
+
+erp_dt <- data.frame(sampling_rate, happy, fearful,
+                     sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+
+#Longformat (erst über pivot_longer und dann noch die sd_.. über ifelse zusammenfügen)
+erp_long <- erp_dt %>% 
+  pivot_longer(cols = c(happy, fearful),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "happy", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "happy", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+
+#ERP Grafik  
+erp_m <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+  geom_hline(yintercept = 0, size = 0.1) + 
+  geom_vline(xintercept = 0, size = 0.1) +
+  coord_cartesian(xlim = c(-200, 800), ylim = c(-20, 5)) +
+  theme_light() +
+  labs(x = "Sampling rate", y = "Potential (uV)") +
+  guides(alpha = F)
+
+rm(list = ls()[! ls() %in% c("erp_m")])
+#rm(list = setdiff(ls(), "erp_m"))
+```
+
+### HAPPE
+
+```{r}
+library(tidyverse)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/"
+setwd(wd)
+
+#Daten laden
+fearful_roi <- read.csv(paste0(wd, "study/fearful_roi_h.csv")) %>% select(-X)
+happy_roi <- read.csv(paste0(wd, "study/happy_roi_h.csv")) %>% select(-X)
+
+#Funktion: Standardfehler
+se <- function(x) sd(x) / sqrt(length(x)) 
+
+#Zeilen für neuen Datensatz vorbereiten (Mittelwert, SE) und in einem Datensatz (erp_dt) zusammenfügen
+sampling_rate <- seq(-200, 798, by = 2)
+happy <- rowMeans(happy_roi)
+fearful <- rowMeans(fearful_roi)
+happy_se <- apply(happy_roi, 1, se)
+fearful_se <- apply(fearful_roi, 1, se)
+sd_min_h <- happy - happy_se
+sd_max_h <- happy + happy_se
+sd_min_ff <- fearful - fearful_se
+sd_max_ff <- fearful + fearful_se
+
+erp_dt <- data.frame(sampling_rate, happy, fearful,
+                     sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+
+#Longformat (erst über pivot_longer und dann noch die sd_.. über ifelse zusammenfügen)
+erp_long <- erp_dt %>% 
+  pivot_longer(cols = c(happy, fearful),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "happy", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "happy", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+
+#ERP Grafik  
+erp_h <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+  geom_hline(yintercept = 0, size = 0.1) + 
+  geom_vline(xintercept = 0, size = 0.1) +
+  coord_cartesian(xlim = c(-200, 800), ylim = c(-20, 5)) +
+  theme_light() +
+  labs(x = "Sampling rate", y = "Potential (uV)") +
+  guides(alpha = F)
+
+rm(list = ls()[! ls() %in% c("erp_m","erp_h")])
+```
+
+
+### APICE
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/"
+setwd(wd)
+
+#Daten laden
+fearful_roi <- read.csv(paste0(wd, "study/fearful_roi_a.csv")) %>% select(-X)
+happy_roi <- read.csv(paste0(wd, "study/happy_roi_a.csv")) %>% select(-X)
+
+#Funktion: Standardfehler
+se <- function(x) sd(x) / sqrt(length(x)) 
+
+#Zeilen für neuen Datensatz vorbereiten (Mittelwert, SE) und in einem Datensatz (erp_dt) zusammenfügen
+sampling_rate <- seq(-200, 798, by = 2)
+happy <- rowMeans(happy_roi)
+fearful <- rowMeans(fearful_roi)
+happy_se <- apply(happy_roi, 1, se)
+fearful_se <- apply(fearful_roi, 1, se)
+sd_min_h <- happy - happy_se
+sd_max_h <- happy + happy_se
+sd_min_ff <- fearful - fearful_se
+sd_max_ff <- fearful + fearful_se
+
+erp_dt <- data.frame(sampling_rate, happy, fearful,
+                     sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+
+#Longformat (erst über pivot_longer und dann noch die sd_.. über ifelse zusammenfügen)
+erp_long <- erp_dt %>% 
+  pivot_longer(cols = c(happy, fearful),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "happy", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "happy", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+
+#ERP Grafik  
+erp_a <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+  geom_hline(yintercept = 0, size = 0.1) + 
+  geom_vline(xintercept = 0, size = 0.1) +
+  coord_cartesian(xlim = c(-200, 800), ylim = c(-20, 5)) +
+  theme_light() +
+  labs(x = "Sampling rate", y = "Potential (uV)") +
+  guides(alpha = F)
+
+rm(list = ls()[! ls() %in% c("erp_m","erp_h", "erp_a")])
+
+erp_m2 <- erp_m + theme(legend.position = "none") +
+  labs(x = "", y = "Potential (uV)")
+erp_h2 <- erp_h + theme(legend.position = "none") +
+  labs(x = "Samplingrate", y = "")
+erp_a2 <- erp_a + theme(legend.position = c(0.8, 0.2), legend.background = element_rect(linetype = "solid", colour = "black")) +
+  labs(x = "", y = "")
+
+erp_all <- ggarrange(erp_m2, erp_h2, erp_a2 + rremove("x.text"), 
+          labels = c("MADE", "HAPPE", "APICE"),
+          ncol = 3, nrow = 1, label.x = 0.4, label.y = 0.98,
+          font.label = list(size = 12, color = "black", face = "bold", family = NULL))
+
+ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/erp_all.png", erp_all,
+       width = 12, height = 4, units = "in")
+```
+
+
+
+
+## ERP per channel
+
+### MADE
+Viel zu lang -> weiß nicht wie man besser für einzelne Channels die Grafiken macht
+
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(cowplot)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_made/export"
+setwd(wd)
+
+names <- list.files(wd)
+names2 <- gsub(".csv", "", names)
+
+# Daten laden
+for (i in 1:length(names)) {
+  idx <- read.csv(file.path(wd, names[i]), header = FALSE, row.names = as.character(seq(-200, 798, by = 2)))
+  idx <- data.frame(idx)  
+  assign(names2[i], idx)
+}
+rm(idx)
+
+sampling_rate <- seq(-200, 798, by = 2)
+se <- function(x) sd(x) / sqrt(length(x)) 
+
+#C3
+h <- rowMeans(made_C3_happy)
+ff <- rowMeans(made_C3_fearful)
+h_se <- apply(made_C3_happy, 1, se)
+ff_se <- apply(made_C3_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+C3 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#C4
+h <- rowMeans(made_C4_happy)
+ff <- rowMeans(made_C4_fearful)
+h_se <- apply(made_C4_happy, 1, se)
+ff_se <- apply(made_C4_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = c(0.85, 0.22), legend.background = element_rect(linetype = "solid", colour = "black"),) +
+    guides(fill = guide_legend(title = "Condition"), color = F, alpha = F)
+
+    #theme(legend.position = c(0.85, 0.22), legend.background = element_rect(linetype = "solid", colour = "black")) +
+    #scale_colour_discrete(labels = c("fearful", "happy")) + 
+    
+C4
+
+#Cz
+h <- rowMeans(made_Cz_happy)
+ff <- rowMeans(made_Cz_fearful)
+h_se <- apply(made_Cz_happy, 1, se)
+ff_se <- apply(made_Cz_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+Cz <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#F3
+h <- rowMeans(made_F3_happy)
+ff <- rowMeans(made_F3_fearful)
+h_se <- apply(made_F3_happy, 1, se)
+ff_se <- apply(made_F3_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+F3 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#F4
+h <- rowMeans(made_F4_happy)
+ff <- rowMeans(made_F4_fearful)
+h_se <- apply(made_F4_happy, 1, se)
+ff_se <- apply(made_F4_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+F4 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F) 
+
+#Fz
+h <- rowMeans(made_Fz_happy)
+ff <- rowMeans(made_Fz_fearful)
+h_se <- apply(made_Fz_happy, 1, se)
+ff_se <- apply(made_Fz_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+Fz <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") + 
+    guides(alpha = F)
+
+rm(list = ls()[! ls() %in% c("C3", "C4", "Cz", "F3", "F4", "Fz")])
+
+erp_channels <- ggarrange(F3, Fz, F4, C3, Cz, C4 + rremove("x.text"), 
+          labels = c("F3", "Fz", "F4", "C3", "Cz", "C4"),
+          ncol = 3, nrow = 2, label.x = 0.4, label.y = 0.98,
+          font.label = list(size = 12, color = "black", face = "bold", family = NULL)) 
+
+erp_made_channels <- annotate_figure(erp_channels,
+              top = text_grob("MADE", face = "bold"),
+              bottom = text_grob("Samplingrate"),
+              left = text_grob("Potential (uV)", rot = 90))
+erp_made_channels
+
+ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/erp_made_channels.png",
+       erp_made_channels, width = 12, height = 6, units = "in")
+```
+
+
+
+### HAPPE
+Viel zu lang -> weiß nicht wie man besser für einzelne Channels die Grafiken macht
+
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(cowplot)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_happe/export"
+setwd(wd)
+
+names <- list.files(wd)
+names2 <- gsub(".csv", "", names)
+
+# Daten laden
+for (i in 1:length(names)) {
+  idx <- read.csv(file.path(wd, names[i]), header = FALSE, row.names = as.character(seq(-200, 798, by = 2)))
+  idx <- data.frame(idx)  
+  assign(names2[i], idx)
+}
+rm(idx)
+
+sampling_rate <- seq(-200, 798, by = 2)
+se <- function(x) sd(x) / sqrt(length(x)) 
+
+#C3
+h <- rowMeans(happe_C3_happy)
+ff <- rowMeans(happe_C3_fearful)
+h_se <- apply(happe_C3_happy, 1, se)
+ff_se <- apply(happe_C3_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+C3 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#C4
+h <- rowMeans(happe_C4_happy)
+ff <- rowMeans(happe_C4_fearful)
+h_se <- apply(happe_C4_happy, 1, se)
+ff_se <- apply(happe_C4_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+C4 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#Cz
+h <- rowMeans(happe_Cz_happy)
+ff <- rowMeans(happe_Cz_fearful)
+h_se <- apply(happe_Cz_happy, 1, se)
+ff_se <- apply(happe_Cz_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+Cz <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#F3
+h <- rowMeans(happe_F3_happy)
+ff <- rowMeans(happe_F3_fearful)
+h_se <- apply(happe_F3_happy, 1, se)
+ff_se <- apply(happe_F3_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+F3 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#F4
+h <- rowMeans(happe_F4_happy)
+ff <- rowMeans(happe_F4_fearful)
+h_se <- apply(happe_F4_happy, 1, se)
+ff_se <- apply(happe_F4_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+F4 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F) 
+
+#Fz
+h <- rowMeans(happe_Fz_happy)
+ff <- rowMeans(happe_Fz_fearful)
+h_se <- apply(happe_Fz_happy, 1, se)
+ff_se <- apply(happe_Fz_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+Fz <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") + 
+    guides(alpha = F)
+
+rm(list = ls()[! ls() %in% c("C3", "C4", "Cz", "F3", "F4", "Fz")])
+
+erp_channels <- ggarrange(F3, Fz, F4, C3, Cz, C4 + rremove("x.text"), 
+          labels = c("F3", "Fz", "F4", "C3", "Cz", "C4"),
+          ncol = 3, nrow = 2, label.x = 0.4, label.y = 0.98,
+          font.label = list(size = 12, color = "black", face = "bold", family = NULL)) 
+
+erp_happe_channels <- annotate_figure(erp_channels,
+              top = text_grob("HAPPE", face = "bold"),
+              bottom = text_grob("Samplingrate"),
+              left = text_grob("Potential (uV)", rot = 90))
+erp_happe_channels
+
+ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/erp_happe_channels.png",
+       erp_happe_channels, width = 12, height = 6, units = "in")
+```
+
+
+
+### APICE
+Viel zu lang -> weiß nicht wie man besser für einzelne Channels die Grafiken macht
+
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(cowplot)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/preprocessed_apice/DATA/export"
+setwd(wd)
+
+names <- list.files(wd)
+names2 <- gsub(".csv", "", names)
+
+# Daten laden
+for (i in 1:length(names)) {
+  idx <- read.csv(file.path(wd, names[i]), header = FALSE, row.names = as.character(seq(-200, 798, by = 2)))
+  idx <- data.frame(idx)  
+  assign(names2[i], idx)
+}
+rm(idx)
+
+sampling_rate <- seq(-200, 798, by = 2)
+se <- function(x) sd(x) / sqrt(length(x)) 
+
+#C3
+h <- rowMeans(apice_C3_happy)
+ff <- rowMeans(apice_C3_fearful)
+h_se <- apply(apice_C3_happy, 1, se)
+ff_se <- apply(apice_C3_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+C3 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#C4
+h <- rowMeans(apice_C4_happy)
+ff <- rowMeans(apice_C4_fearful)
+h_se <- apply(apice_C4_happy, 1, se)
+ff_se <- apply(apice_C4_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+C4 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = c(0.85, 0.22), legend.background = element_rect(linetype = "solid", colour = "black")) +
+    guides(alpha = F)
+
+#Cz
+h <- rowMeans(apice_Cz_happy)
+ff <- rowMeans(apice_Cz_fearful)
+h_se <- apply(apice_Cz_happy, 1, se)
+ff_se <- apply(apice_Cz_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+Cz <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#F3
+h <- rowMeans(apice_F3_happy)
+ff <- rowMeans(apice_F3_fearful)
+h_se <- apply(apice_F3_happy, 1, se)
+ff_se <- apply(apice_F3_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+F3 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F)
+
+#F4
+h <- rowMeans(apice_F4_happy)
+ff <- rowMeans(apice_F4_fearful)
+h_se <- apply(apice_F4_happy, 1, se)
+ff_se <- apply(apice_F4_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+F4 <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") +
+    guides(alpha = F) 
+
+#Fz
+h <- rowMeans(apice_Fz_happy)
+ff <- rowMeans(apice_Fz_fearful)
+h_se <- apply(apice_Fz_happy, 1, se)
+ff_se <- apply(apice_Fz_fearful, 1, se)
+sd_min_h <- h - h_se
+sd_max_h <- h + h_se
+sd_min_ff <- ff - ff_se
+sd_max_ff <- ff + ff_se
+  
+erp_dt <- data.frame(sampling_rate, h, ff, sd_min_h, sd_max_h, sd_min_ff, sd_max_ff)
+erp_long <- erp_dt %>%  pivot_longer(cols = c(h, ff),
+               names_to = "condition",
+               values_to = "wert") 
+
+erp_long$sd_min <- ifelse(erp_long$condition == "h", erp_long$sd_min_h,
+                          erp_long$sd_min_ff) 
+erp_long$sd_max <- ifelse(erp_long$condition == "h", erp_long$sd_max_h,
+                          erp_long$sd_max_ff)
+erp_long <- select(erp_long, sampling_rate, condition, wert, sd_min, sd_max)
+  
+Fz <- ggplot(erp_long, aes(x = sampling_rate, y = wert, colour = condition)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = sd_min, ymax = sd_max, fill = condition, alpha = 0.1)) +
+    geom_hline(yintercept = 0, size = 0.1) + 
+    geom_vline(xintercept = 0, size = 0.1) +
+    coord_cartesian(xlim = c(-200, 800), ylim = c(-25, 5)) +
+    theme_light() +
+    labs(x = "", y = "") +
+    theme(legend.position = "none") + 
+    guides(alpha = F)
+
+rm(list = ls()[! ls() %in% c("C3", "C4", "Cz", "F3", "F4", "Fz")])
+
+erp_channels <- ggarrange(F3, Fz, F4, C3, Cz, C4 + rremove("x.text"), 
+          labels = c("F3", "Fz", "F4", "C3", "Cz", "C4"),
+          ncol = 3, nrow = 2, label.x = 0.4, label.y = 0.98,
+          font.label = list(size = 12, color = "black", face = "bold", family = NULL)) 
+
+erp_apice_channels <- annotate_figure(erp_channels,
+              top = text_grob("APICE", face = "bold"),
+              bottom = text_grob("Samplingrate"),
+              left = text_grob("Potential (uV)", rot = 90))
+erp_apice_channels
+
+ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/erp_apice_channels.png",
+       erp_apice_channels, width = 12, height = 6, units = "in")
+```
+
+
+## Assumptions t-test uV
+
+```{r}
+rm(list = ls())
+library(ggplot2)
+library(ggpubr)
+library(png)
+wd = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots"
+wd2 = "D:/Masterarbeit/Forschungspraktikum/MOMA-audio/"
+setwd(wd)
+
+#Voraussetzungen testen (MADE)
+made <- read.csv(file.path(wd2, "study/dat_all_made.csv"))
+made$difference <- made$score_h_m - made$score_ff_m 
+#Normalverteilung
+shapiro.test(made$difference) #nicht signifikant
+hist_made <- ggplot(made, aes(difference)) + 
+  geom_histogram(aes(y = ..density..), colour = "black", 
+                 fill = "grey80", bins = 6) +
+  stat_function(fun = dnorm, args = list(mean = mean(made$difference),
+                                         sd = sd(made$difference)), 
+                colour = "black", size = 1) +
+  labs(title = "MADE", x = "", y = "") +
+  geom_label(x = 16.5,y = 0.055,label = "Shapiro-Wilk-Test\nw = .95 p = .125", 
+             size = 4) +
+  theme_light() +
+  theme(text = element_text(family = "Arial", size = 15)) +
+    coord_cartesian(xlim = c(-22, 25), ylim = c(0, 0.06))
+
+#ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/hist_normality_made_ttest.png", hist_made, width = 6, height = 5, units = "in")
+
+#VORAUSSETZUNGEN testen (Differenz bilden)
+happe <- read.csv(file.path(wd2, "study/dat_all_happe.csv"))
+happe$difference <- happe$score_h_h - happe$score_ff_h 
+#Normalverteilung
+shapiro.test(happe$difference) #nicht signifikant
+hist_happe <- ggplot(happe, aes(difference)) + 
+  geom_histogram(aes(y = ..density..), 
+                 colour = "black", fill = "grey80", bins = 6) +
+  stat_function(fun = dnorm, args = list(mean = mean(happe$difference),
+                                         sd = sd(happe$difference)), 
+                colour = "black", size = 1) +
+  labs(title = "HAPPE", x = "difference happy vs. fearful (uV)",
+       y = "") +
+  geom_label(x = 16.5,y = 0.055,label = "Shapiro-Wilk-Test\nw = .96 p = .19", 
+             size = 4) +
+  theme_light() +
+  theme(text = element_text(family = "Arial", size = 15)) +
+    coord_cartesian(xlim = c(-22, 25), ylim = c(0, 0.06))
+
+#ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/hist_normality_happe_ttest.png", hist_happe, width = 6, height = 5, units = "in")
+
+#VORAUSSETZUNGEN testen (Differenz bilden)
+apice <- read.csv(file.path(wd2, "study/dat_all_apice.csv"))
+apice$difference <- apice$score_h_a - apice$score_ff_a 
+#Normalverteilung
+shapiro.test(apice$difference) #nicht signifikant
+hist_apice <- ggplot(apice, aes(difference)) + 
+  geom_histogram(aes(y = ..density..), 
+                 colour = "black", fill = "grey80", bins = 6) +
+  stat_function(fun = dnorm, args = list(mean = mean(apice$difference),
+                                         sd = sd(apice$difference)), 
+                colour = "black", size = 1) +
+  labs(title = "APICE", x = "",
+       y = "relative frequency") +
+  geom_label(x = 16.5,y = 0.055,label = "Shapiro-Wilk-Test\nw = .98 p = .773", 
+             size = 4) +
+  theme_light() +
+  theme(text = element_text(family = "Arial", size = 15))+
+    coord_cartesian(xlim = c(-22, 25), ylim = c(0, 0.06))
+
+hist_normality <- ggarrange(hist_apice, hist_happe, hist_made,
+          ncol = 3, nrow = 1, label.x = 0.4, label.y = 0.98,
+          font.label = list(size = 12, color = "black", face = "bold", family = NULL))
+
+ggsave("D:/Masterarbeit/Forschungspraktikum/MOMA-audio/plots/hist_normality.png", hist_normality, width = 12, height = 4, units = "in")
+```
+
