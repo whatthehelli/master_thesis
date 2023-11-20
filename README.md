@@ -1,7 +1,7 @@
 # master_thesis
 scripts for evaluation for my master thesis. 
 
-Im folgenden sind alle verwendeten Skripte für die Masterarbeit aufgelistet. Die Hauptdatenauswertung hat mit dem Auswertung_MA2.Rmd in R stattgefunden. Dafür lagen die vorverarbeiteten Daten aus den drei Pipelines aber schon im richtigen Format vor. Die Vorverarbeitungsskripte sind im Ordner "preprocessing" zu finden. Die jeweiligen Dateipfade müssten angepasst werden, da diese an unterschiedlichen Orten verteilt lagen.
+Im folgenden sind alle verwendeten Skripte für die Masterarbeit aufgelistet. Die Hauptdatenauswertung hat mit dem Auswertung_MA2.Rmd in R stattgefunden. Dafür lagen die vorverarbeiteten Daten aus den drei Pipelines vor. Die Vorverarbeitungsskripte sind im Ordner "preprocessing" zu finden. Die jeweiligen Dateipfade müssten angepasst werden, da diese an unterschiedlichen Orten verteilt lagen.
 
 Im R-Skript sollte alles ausreichend kommentiert sein (letztes verwendetes Skript). Die anderen Skripte wurden in der folgenden Reihenfolge verwendet:
 1. convert_eeg_to_set_2.m - ALLE - "All .vhdr, .vmrk, .eeg to set and S1-S12 Trigger (all other ""events"" are removed) and change every trigger where the child did not look on the screen to S_X"
